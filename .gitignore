@@ -1,0 +1,26 @@
+# data files (re-downloadable, not source)
+*.csv
+*.zip
+
+# compiled binaries / build logs
+*.ex5
+*.log
+
+# scratch tester ini configs (session-generated, not source)
+m5_run/
+XAUUSD_python_scripts_all/
+
+# MT5 tester report exports (kept only under reports/, not root)
+ReportTester-*.xlsx
+
+# editor/OS cruft
+Thumbs.db
+desktop.ini
+~$*.xlsx
+
+# ad-hoc test-run scratch (orchestration scripts, tester ini configs, debug dumps)
+run_*.sh
+tester_*.ini
+*.pkl
+dbg_lines.txt
+
