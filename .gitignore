@@ -24,3 +24,4 @@ tester_*.ini
 *.pkl
 dbg_lines.txt
 
+__pycache__/
