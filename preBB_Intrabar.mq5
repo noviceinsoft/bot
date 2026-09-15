@@ -42,12 +42,12 @@ input bool     InpBlockH1M15M30Stack = false;       // don't let M15/M30/H1 all 
 input bool     InpPreferSmallTf = false;            // if a "small" TF (M5/M15) is already open, skip a same-time "big" TF (M30/H1) entry -- let the faster TF trade alone instead of stacking
 input bool     InpSkipAfterLossSameDir = false;     // don't let a TF re-fire the SAME direction again if its own last closed trade in that direction was a loss (chain-of-losses brake found in the Apr 2026 cluster analysis)
 input int      InpLossCooldownBars = 20;            // bars to wait (this TF's own bars) after a same-direction loss before allowing that direction again -- prevents a permanent lockout
-input bool     InpUseRSIGate = false;                // require RSI(14, shift1) to confirm the direction is a real extreme, not mid-trend continuation (the losing RSI 50-70 zone found in analysis)
+input bool     InpUseRSIGate = true;                 // require RSI(14, shift1) to confirm the direction is a real extreme, not mid-trend continuation (the losing RSI 50-70 zone found in analysis)
 input double   InpRSIExtremity = 0;                  // symmetric distance from 50: SELL needs RSI>=50+X, BUY needs RSI<=50-X -- shared across all TF, used when Opt_TfSelect grids one TF in isolation
-input double   M5_RSIExtremity  = 0;                 // per-TF extremity for combined runs (0 = off for that TF)
-input double   M15_RSIExtremity = 0;
-input double   M30_RSIExtremity = 0;
-input double   H1_RSIExtremity  = 0;
+input double   M5_RSIExtremity  = 0;                 // per-TF extremity for combined runs (0 = off for that TF) -- M5: gate hurts (no losing mid-RSI zone found), leave off
+input double   M15_RSIExtremity = 10;                // M15: strongest gate, narrowest losing-RSI zone
+input double   M30_RSIExtremity = 5;
+input double   H1_RSIExtremity  = 5;
 
 input group "=== Timeframes ==="
 input bool     Enable_M5   = true;                  // Run M5
@@ -84,16 +84,16 @@ input double   PriceUnit       = 1.0;
 input group "=== Signal (per-TF K, so each TF can run its own tuned threshold together) ==="
 input double   K_Threshold_Pct = 0.55;              // fallback used when Opt_TfSelect is set (single-TF grid runs) -- combined runs use the Mx_K_Threshold_Pct below
 input double   K_Threshold_Dollar = 0.0;            // if >0, use this fixed $ threshold instead of Pct (all TF)
-input double   M5_K_Threshold_Pct  = 0.55;
-input double   M15_K_Threshold_Pct = 0.55;
-input double   M30_K_Threshold_Pct = 0.55;
-input double   H1_K_Threshold_Pct  = 0.55;
+input double   M5_K_Threshold_Pct  = 0.40;
+input double   M15_K_Threshold_Pct = 0.60;
+input double   M30_K_Threshold_Pct = 0.60;
+input double   H1_K_Threshold_Pct  = 0.60;
 
 input group "=== TP chase fraction (per-TF, unchanged mechanism) ==="
-input double   M5_ChaseFraction  = 0.6;
+input double   M5_ChaseFraction  = 0.5;
 input double   M15_ChaseFraction = 0.5;
-input double   M30_ChaseFraction = 0.75;
-input double   H1_ChaseFraction  = 0.5;
+input double   M30_ChaseFraction = 0.5;
+input double   H1_ChaseFraction  = 0.6;
 
 input group "=== Optimizer helpers (leave -1 for normal use) ==="
 input int      Opt_TfSelect = -1;                    // -1: use Enable_* ; 0=M5 1=M15 2=M30 3=H1 only ; 4=all four
