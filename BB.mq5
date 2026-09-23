@@ -1230,7 +1230,7 @@ double OnTester()
    if(InpCsvDumpName == "") return(0.0);
    if(!HistorySelect(0, TimeCurrent())) return(0.0);
 
-   string fname = InpCsvDumpName + "_m1frac" + DoubleToString(M1_TPBlendFrac, 2) + ".csv"; // encode swept input so grid passes never collide
+   string fname = InpCsvDumpName + ".csv";
    int handle = FileOpen(fname, FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON, ',');
    if(handle == INVALID_HANDLE) return(0.0);
 
@@ -1267,6 +1267,33 @@ double OnTester()
    }
 
    FileClose(handle);
+
+   // summary row: TesterStatistics() drawdown figures aren't derivable from the deal
+   // log alone (floating equity DD needs the tester's own tick-by-tick tracking)
+   int statHandle = FileOpen(InpCsvDumpName + "_stats.csv", FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON, ',');
+   if(statHandle != INVALID_HANDLE)
+   {
+      FileWrite(statHandle, "NetProfit", "ProfitFactor", "Trades", "WinRate",
+                "AvgWin", "AvgLoss", "BalanceDD_USD", "BalanceDD_Pct", "EquityDD_USD", "EquityDD_Pct");
+      double grossProfit = TesterStatistics(STAT_GROSS_PROFIT);
+      double grossLoss   = TesterStatistics(STAT_GROSS_LOSS);
+      double winTrades   = TesterStatistics(STAT_PROFIT_TRADES);
+      double lossTrades  = TesterStatistics(STAT_LOSS_TRADES);
+      double totalTrades = TesterStatistics(STAT_TRADES);
+      FileWrite(statHandle,
+                TesterStatistics(STAT_PROFIT),
+                TesterStatistics(STAT_PROFIT_FACTOR),
+                (long)totalTrades,
+                totalTrades > 0 ? winTrades / totalTrades : 0.0,
+                winTrades > 0 ? grossProfit / winTrades : 0.0,
+                lossTrades > 0 ? -grossLoss / lossTrades : 0.0,
+                TesterStatistics(STAT_BALANCE_DD),
+                TesterStatistics(STAT_BALANCEDD_PERCENT),
+                TesterStatistics(STAT_EQUITY_DD),
+                TesterStatistics(STAT_EQUITYDD_PERCENT));
+      FileClose(statHandle);
+   }
+
    return(0.0);
 }
 //+------------------------------------------------------------------+
