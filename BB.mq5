@@ -4,8 +4,10 @@
 //|  each with a TP that re-pegs every bar (EMA-smoothed toward the   |
 //|  latest close) instead of a fixed target -- and no SL.            |
 //|                                                                    |
-//|  Variables: x/x2 = upper/lower band value read live at shift0,    |
-//|  the instant a new bar opens.                                     |
+//|  Variables: x/x2 = upper/lower band point, solved exactly (see    |
+//|  SolveBandPoint) for the self-consistent value the band would     |
+//|  have if the forming bar closed at that price -- not the raw      |
+//|  shift-0 snapshot taken at bar-open.                               |
 //|                                                                    |
 //|  ORIGINAL (THS/THB, InpUseOriginalEA):                            |
 //|   THS: bid - x >= THS_Threshold_Units  -> Sell instant, TP = x.   |
@@ -54,6 +56,14 @@ CTrade trade; // used only for CloseAllOurs()/pending cancel; order opening belo
 input group "=== Tester CSV dump ==="
 input string   InpCsvDumpName = "";                 // if set, OnTester writes deals to <name>.csv (Common\Files)
 input bool     InpDebugNext2  = false;              // one-off: dump next-2-candle H/C vs TP for the 10 known losers
+input bool     InpDebugBandSolve = false;           // log shift-0 snapshot vs solved band point every new bar (BB_bandsolve_debug.csv)
+input group "=== Quadratic band TP-blend (per-TF, 0 = fully original snapshot behavior) ==="
+input double   M1_TPBlendFrac  = 0.75;              // 0=original threshold+TP; >0=quadratic threshold, TP=baseline+frac*(quadratic-baseline). Sweet spot 0.75 for M1.
+input double   M5_TPBlendFrac  = 0.0;
+input double   M15_TPBlendFrac = 0.0;
+input double   M30_TPBlendFrac = 0.0;
+input double   H1_TPBlendFrac  = 0.0;
+input double   H4_TPBlendFrac  = 0.0;
 input int      InpMaxBarsHold = 0;                  // force-close if TP not touched after this many bars (0 = chase forever)
 input double   InpChaseFraction = 0.6;              // TP EMA smoothing for THS/THB: TP = lastTp + frac*(newClose-lastTp) [sell] / lastTp - frac*(lastTp-newClose) [buy]
 input double   InpAddonChaseFraction = 0.6666666667; // same EMA smoothing, but for THS2/THB2 fills
@@ -62,12 +72,12 @@ input bool     InpUseBandChase = false;             // true: TP chases the live 
 input int      InpGlobalMaxConcurrent = 0;          // cap on open+pending positions across ALL 6 timeframes combined (0 = no cap, per-TF caps still apply)
 
 input group "=== Timeframes ==="
-input bool     Enable_M1   = false;                 // Run M1
-input bool     Enable_M5   = false;                 // Run M5
-input bool     Enable_M15  = false;                 // Run M15
-input bool     Enable_M30  = false;                 // Run M30
-input bool     Enable_H1   = false;                 // Run H1
-input bool     Enable_H4   = true;                  // Run H4
+input bool     Enable_M1   = true;                  // Run M1
+input bool     Enable_M5   = true;                  // Run M5
+input bool     Enable_M15  = true;                  // Run M15
+input bool     Enable_M30  = true;                  // Run M30
+input bool     Enable_H1   = true;                  // Run H1
+input bool     Enable_H4   = false;                 // Run H4
 input int      M1_Magic    = 111001;                // M1 magic (unique)
 input int      M5_Magic    = 111005;                // M5 magic (unique)
 input int      M15_Magic   = 111015;                // M15 magic (unique)
@@ -129,13 +139,13 @@ input bool     UseTHB2                = true;        // Enable
 input double   THB2_Threshold_Units   = 4.0;         // x2 - bar0.low > this -> Buy Limit at bar0.low, TP = x2
 
 input group "=== Per-Timeframe Order Limits ==="
-input int      M1_MaxConcurrentOrders  = 3;          // M1 max orders
+input int      M1_MaxConcurrentOrders  = 4;          // M1 max orders
 input int      M5_MaxConcurrentOrders  = 3;          // M5 max orders
 input int      M15_MaxConcurrentOrders = 3;          // M15 max orders
 input int      M30_MaxConcurrentOrders = 3;          // M30 max orders
 input int      H1_MaxConcurrentOrders  = 3;          // H1 max orders
-input int      H4_MaxConcurrentOrders  = 4;          // H4 max orders
-input int      M1_CooldownBars  = 1;                 // M1 min bars since last order (0 = off)
+input int      H4_MaxConcurrentOrders  = 1;          // H4 max orders
+input int      M1_CooldownBars  = 0;                 // M1 min bars since last order (0 = off)
 input int      M5_CooldownBars  = 0;                 // M5 min bars since last order (0 = off)
 input int      M15_CooldownBars = 0;                 // M15 min bars since last order (0 = off)
 input int      M30_CooldownBars = 0;                 // M30 min bars since last order (0 = off)
@@ -143,11 +153,11 @@ input int      H1_CooldownBars  = 0;                 // H1 min bars since last o
 input int      H4_CooldownBars  = 0;                 // H4 min bars since last order (0 = off)
 
 input group "=== Trade Management ==="
-input double   LotSize         = 0.01;               // Lot size
-input int      Slippage        = 10;                 // Slippage (points)
+input double   LotSize         = 0.02;               // Lot size
+input int      Slippage        = 500;                // Slippage (points)
 
 input group "=== Daily Profit Stop (all enabled timeframes/magics) ==="
-input double   DailyProfitStopPct = 0.0;             // Close all + stop trading when PnL gains this % vs snapshot balance (0 = disabled)
+input double   DailyProfitStopPct = 100.0;           // Close all + stop trading when PnL gains this % vs snapshot balance (0 = disabled)
 input double   DailyProfitStopUSD = 0.0;             // Close all + stop trading when PnL gains this many $ (0 = disabled). If both set, whichever is hit first wins.
 input int      SnapHour            = 0;              // Server-time hour (0-23) to take the daily balance snapshot. 0 = midnight.
 
@@ -164,6 +174,7 @@ int             g_maxConcurrent[TF_COUNT];
 int             g_cooldownBars[TF_COUNT];
 bool            g_origEnabled[TF_COUNT];  // per-TF isolate switch for THS/THB
 bool            g_addonEnabled[TF_COUNT]; // per-TF isolate switch for THS2/THB2
+double          g_tpBlendFrac[TF_COUNT];  // per-TF quadratic TP-blend fraction (0 = fully original behavior)
 
 //--- daily profit stop state, scoped to this EA's own positions only ---
 double   g_snapshotBalance   = 0.0;
@@ -217,6 +228,10 @@ int OnInit()
    g_addonEnabled[IDX_M15] = Addon_M15; g_addonEnabled[IDX_M30] = Addon_M30;
    g_addonEnabled[IDX_H1] = Addon_H1;   g_addonEnabled[IDX_H4] = Addon_H4;
 
+   g_tpBlendFrac[IDX_M1] = M1_TPBlendFrac;   g_tpBlendFrac[IDX_M5] = M5_TPBlendFrac;
+   g_tpBlendFrac[IDX_M15] = M15_TPBlendFrac; g_tpBlendFrac[IDX_M30] = M30_TPBlendFrac;
+   g_tpBlendFrac[IDX_H1] = H1_TPBlendFrac;   g_tpBlendFrac[IDX_H4] = H4_TPBlendFrac;
+
    for(int i = 0; i < TF_COUNT; i++)
       for(int j = i + 1; j < TF_COUNT; j++)
          if(g_magic[i] == g_magic[j])
@@ -240,6 +255,14 @@ int OnInit()
          Print("Failed to init Bollinger Band for ", g_tfName[i]);
          return(INIT_FAILED);
       }
+   }
+
+   if(InpDebugBandSolve)
+   {
+      g_bandSolveHandle = FileOpen("BB_bandsolve_debug.csv", FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON, ',');
+      if(g_bandSolveHandle != INVALID_HANDLE)
+         FileWrite(g_bandSolveHandle, "Time", "TF", "Side", "Snapshot", "Solved", "Diff", "UsedFallback",
+                   "SigOrigOld", "SigOrigNew", "SigAddonOld", "SigAddonNew");
    }
 
    // baseline until the first snapshot: balance at attach
@@ -729,6 +752,9 @@ void OnDeinit(const int reason)
    for(int i = 0; i < TF_COUNT; i++)
       if(g_bb_handle[i] != INVALID_HANDLE)
          IndicatorRelease(g_bb_handle[i]);
+
+   if(g_bandSolveHandle != INVALID_HANDLE)
+      FileClose(g_bandSolveHandle);
 }
 
 //+------------------------------------------------------------------+
@@ -930,6 +956,90 @@ ulong OpenLimitOrder(bool isSell, double limitPrice, double tpPrice, string comm
 }
 
 //+------------------------------------------------------------------+
+//| Applied price of one bar, per BB_Price -- mirrors what iBands     |
+//| itself feeds into SMA/stddev for that bar.                        |
+//+------------------------------------------------------------------+
+double AppliedPrice(int tf, int shift)
+{
+   switch(BB_Price)
+   {
+      case PRICE_OPEN:     return iOpen(_Symbol, g_tf[tf], shift);
+      case PRICE_HIGH:     return iHigh(_Symbol, g_tf[tf], shift);
+      case PRICE_LOW:      return iLow(_Symbol, g_tf[tf], shift);
+      case PRICE_MEDIAN:   return (iHigh(_Symbol, g_tf[tf], shift) + iLow(_Symbol, g_tf[tf], shift)) / 2.0;
+      case PRICE_TYPICAL:  return (iHigh(_Symbol, g_tf[tf], shift) + iLow(_Symbol, g_tf[tf], shift) + iClose(_Symbol, g_tf[tf], shift)) / 3.0;
+      case PRICE_WEIGHTED: return (iHigh(_Symbol, g_tf[tf], shift) + iLow(_Symbol, g_tf[tf], shift) + 2.0 * iClose(_Symbol, g_tf[tf], shift)) / 4.0;
+      default:             return iClose(_Symbol, g_tf[tf], shift); // PRICE_CLOSE
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Self-consistent band point: solves Band(P) = P (quadratic in P,   |
+//| mean linear + var quadratic). S/Q are the BB_Period-1 already-    |
+//| CLOSED bars (shift 1..BB_Period-1); fallback = shift-0 snapshot,  |
+//| used only if no valid root on the correct side exists.            |
+//+------------------------------------------------------------------+
+double SolveBandPoint(int tf, bool upper, double fallback, bool &usedFallback)
+{
+   usedFallback = false;
+   int    N = BB_Period;
+   double k = BB_Deviation;
+   double S = 0.0, Q = 0.0;
+   for(int i = 1; i < N; i++)
+   {
+      double p = AppliedPrice(tf, i);
+      S += p;
+      Q += p * p;
+   }
+
+   double m = (double)(N - 1) - k * k;
+   double A = (N - 1) * m;
+   double B = -2.0 * S * m;
+   double C = S * S * (1.0 + k * k) - k * k * N * Q;
+
+   if(MathAbs(A) < 1e-8) { usedFallback = true; return fallback; }
+   double disc = B * B - 4.0 * A * C;
+   if(disc < 0) { usedFallback = true; return fallback; }
+
+   double sq = MathSqrt(disc);
+   double r1 = (-B + sq) / (2.0 * A);
+   double r2 = (-B - sq) / (2.0 * A);
+   double d1 = r1 - (S + r1) / N;
+   double d2 = r2 - (S + r2) / N;
+
+   if(upper)
+   {
+      if(d1 >= 0 && d2 < 0) return r1;
+      if(d2 >= 0 && d1 < 0) return r2;
+      if(d1 >= 0 && d2 >= 0) return MathMax(r1, r2);
+   }
+   else
+   {
+      if(d1 <= 0 && d2 > 0) return r1;
+      if(d2 <= 0 && d1 > 0) return r2;
+      if(d1 <= 0 && d2 <= 0) return MathMin(r1, r2);
+   }
+   usedFallback = true;
+   return fallback;
+}
+
+//+------------------------------------------------------------------+
+//| InpDebugBandSolve: one row per new bar per side, comparing the    |
+//| shift-0 snapshot against the solved point -- to check which way   |
+//| (and how far) the solve moves the band vs the old approximation.  |
+//+------------------------------------------------------------------+
+int g_bandSolveHandle = INVALID_HANDLE; // opened once in OnInit, kept open -- per-call FileOpen/FileClose was the earlier perf bug
+
+void LogBandSolve(int tf, string side, double snapshot, double solved, bool usedFallback,
+                  bool sigAOld, bool sigANew, bool sigBOld, bool sigBNew)
+{
+   if(!InpDebugBandSolve || g_bandSolveHandle == INVALID_HANDLE) return;
+   FileWrite(g_bandSolveHandle, TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS), g_tfName[tf], side,
+             snapshot, solved, solved - snapshot, usedFallback ? "YES" : "NO",
+             sigAOld ? "YES" : "NO", sigANew ? "YES" : "NO", sigBOld ? "YES" : "NO", sigBNew ? "YES" : "NO");
+}
+
+//+------------------------------------------------------------------+
 //| THS (upper band, sell): bid - x >= THS_Threshold_Units -> Sell    |
 //| instant, TP = x. Checked against Bid (the real sell fill price),  |
 //| not the stale bar close, so spread can't eat the TP margin.       |
@@ -948,13 +1058,30 @@ void CheckAndTrade_UpperBand(int tf)
       Print("[", g_tfName[tf], "] Failed to read x (band shift0)");
       return;
    }
-   double x = xArr[0];
-
-   if(InpUseOriginalEA && UseTHS && g_origEnabled[tf] && bid - x >= THS_Threshold_Units * PriceUnit)
+   bool xUsedFallback = false;
+   double xEntry = xArr[0], xTP = xArr[0]; // per-TF frac==0 (default for every TF except M1): fully original snapshot behavior
+   if(g_tpBlendFrac[tf] > 0)
    {
-      ulong ticket = OpenOrder(ORDER_TYPE_SELL, x, "THS", tf);
+      xEntry = SolveBandPoint(tf, true, xArr[0], xUsedFallback); // threshold uses quadratic (easier entry, per debug findings)
+      xTP = xArr[0] + g_tpBlendFrac[tf] * (xEntry - xArr[0]);    // TP blended baseline<->quadratic
+   }
+
+   if(InpDebugBandSolve)
+   {
+      double dbgBar0High = iHigh(_Symbol, g_tf[tf], 1);
+      double dbgBar0Close = iClose(_Symbol, g_tf[tf], 1);
+      bool thsOld = bid - xArr[0] >= THS_Threshold_Units * PriceUnit;
+      bool thsNew = bid - xEntry >= THS_Threshold_Units * PriceUnit;
+      bool ths2Old = dbgBar0High - xArr[0] > THS2_Threshold_Units * PriceUnit && dbgBar0Close - xArr[0] >= THS2_Threshold_Units * PriceUnit;
+      bool ths2New = dbgBar0High - xEntry > THS2_Threshold_Units * PriceUnit && dbgBar0Close - xEntry >= THS2_Threshold_Units * PriceUnit;
+      LogBandSolve(tf, "UPPER", xArr[0], xEntry, xUsedFallback, thsOld, thsNew, ths2Old, ths2New);
+   }
+
+   if(InpUseOriginalEA && UseTHS && g_origEnabled[tf] && bid - xEntry >= THS_Threshold_Units * PriceUnit)
+   {
+      ulong ticket = OpenOrder(ORDER_TYPE_SELL, xTP, "THS", tf);
       if(ticket != 0)
-         RegisterOneBarExit(tf, ticket, true, x, InpChaseFraction);
+         RegisterOneBarExit(tf, ticket, true, xTP, InpChaseFraction);
    }
 
    if(InpUseAddonEA && UseTHS2 && g_addonEnabled[tf])
@@ -963,11 +1090,11 @@ void CheckAndTrade_UpperBand(int tf)
       double bar0Close = iClose(_Symbol, g_tf[tf], 1);
       // require the wick (high) AND the settled close both clear the threshold --
       // filters out bars that only spiked on a wick and closed back near the band
-      if(bar0High - x > THS2_Threshold_Units * PriceUnit && bar0Close - x >= THS2_Threshold_Units * PriceUnit)
+      if(bar0High - xEntry > THS2_Threshold_Units * PriceUnit && bar0Close - xEntry >= THS2_Threshold_Units * PriceUnit)
       {
-         ulong ticket = OpenLimitOrder(true, bar0High, x, "THS2", tf);
+         ulong ticket = OpenLimitOrder(true, bar0High, xTP, "THS2", tf);
          if(ticket != 0)
-            RegisterPendingLimit(tf, ticket, true, x);
+            RegisterPendingLimit(tf, ticket, true, xTP);
       }
    }
 }
@@ -991,13 +1118,30 @@ void CheckAndTrade_LowerBand(int tf)
       Print("[", g_tfName[tf], "] Failed to read x2 (lower band shift0)");
       return;
    }
-   double x2 = x2Arr[0];
-
-   if(InpUseOriginalEA && UseTHB && g_origEnabled[tf] && x2 - ask >= THB_Threshold_Units * PriceUnit)
+   bool x2UsedFallback = false;
+   double x2Entry = x2Arr[0], x2TP = x2Arr[0]; // per-TF frac==0 (default for every TF except M1): fully original snapshot behavior
+   if(g_tpBlendFrac[tf] > 0)
    {
-      ulong ticket = OpenOrder(ORDER_TYPE_BUY, x2, "THB", tf);
+      x2Entry = SolveBandPoint(tf, false, x2Arr[0], x2UsedFallback); // threshold uses quadratic
+      x2TP = x2Arr[0] + g_tpBlendFrac[tf] * (x2Entry - x2Arr[0]);    // TP blended baseline<->quadratic
+   }
+
+   if(InpDebugBandSolve)
+   {
+      double dbgBar0Low = iLow(_Symbol, g_tf[tf], 1);
+      double dbgBar0Close = iClose(_Symbol, g_tf[tf], 1);
+      bool thbOld = x2Arr[0] - ask >= THB_Threshold_Units * PriceUnit;
+      bool thbNew = x2Entry - ask >= THB_Threshold_Units * PriceUnit;
+      bool thb2Old = x2Arr[0] - dbgBar0Low > THB2_Threshold_Units * PriceUnit && x2Arr[0] - dbgBar0Close >= THB2_Threshold_Units * PriceUnit;
+      bool thb2New = x2Entry - dbgBar0Low > THB2_Threshold_Units * PriceUnit && x2Entry - dbgBar0Close >= THB2_Threshold_Units * PriceUnit;
+      LogBandSolve(tf, "LOWER", x2Arr[0], x2Entry, x2UsedFallback, thbOld, thbNew, thb2Old, thb2New);
+   }
+
+   if(InpUseOriginalEA && UseTHB && g_origEnabled[tf] && x2Entry - ask >= THB_Threshold_Units * PriceUnit)
+   {
+      ulong ticket = OpenOrder(ORDER_TYPE_BUY, x2TP, "THB", tf);
       if(ticket != 0)
-         RegisterOneBarExit(tf, ticket, false, x2, InpChaseFraction);
+         RegisterOneBarExit(tf, ticket, false, x2TP, InpChaseFraction);
    }
 
    if(InpUseAddonEA && UseTHB2 && g_addonEnabled[tf])
@@ -1006,11 +1150,11 @@ void CheckAndTrade_LowerBand(int tf)
       double bar0Close = iClose(_Symbol, g_tf[tf], 1);
       // require the wick (low) AND the settled close both clear the threshold --
       // filters out bars that only spiked on a wick and closed back near the band
-      if(x2 - bar0Low > THB2_Threshold_Units * PriceUnit && x2 - bar0Close >= THB2_Threshold_Units * PriceUnit)
+      if(x2Entry - bar0Low > THB2_Threshold_Units * PriceUnit && x2Entry - bar0Close >= THB2_Threshold_Units * PriceUnit)
       {
-         ulong ticket = OpenLimitOrder(false, bar0Low, x2, "THB2", tf);
+         ulong ticket = OpenLimitOrder(false, bar0Low, x2TP, "THB2", tf);
          if(ticket != 0)
-            RegisterPendingLimit(tf, ticket, false, x2);
+            RegisterPendingLimit(tf, ticket, false, x2TP);
       }
    }
 }
@@ -1086,7 +1230,8 @@ double OnTester()
    if(InpCsvDumpName == "") return(0.0);
    if(!HistorySelect(0, TimeCurrent())) return(0.0);
 
-   int handle = FileOpen(InpCsvDumpName + ".csv", FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON, ',');
+   string fname = InpCsvDumpName + "_m1frac" + DoubleToString(M1_TPBlendFrac, 2) + ".csv"; // encode swept input so grid passes never collide
+   int handle = FileOpen(fname, FILE_WRITE|FILE_CSV|FILE_ANSI|FILE_COMMON, ',');
    if(handle == INVALID_HANDLE) return(0.0);
 
    FileWrite(handle, "Time", "Deal", "Symbol", "Type", "Direction", "Volume", "Price", "Order", "Position", "Magic", "Commission", "Swap", "Profit", "Balance", "Comment");
